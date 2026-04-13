@@ -7,7 +7,9 @@ class Ticket {
   constructor(id, vehicle, parkingSpot, entryTime = new Date()) {
     this.id = id;
     this.vehicle = vehicle;
+    this.vehicleId = vehicle.id;
     this.parkingSpot = parkingSpot;
+    this.spotId = parkingSpot.id;
     this.entryTime = entryTime;
     this.exitTime = null;
     this.fee = 0;

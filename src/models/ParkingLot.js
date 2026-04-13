@@ -4,6 +4,7 @@ class ParkingLot {
   constructor() {
     this.spots = [];
     this.tickets = new Map();
+    this.reservations = new Map();
     this.initializeSpots();
   }
 
@@ -20,12 +21,32 @@ class ParkingLot {
     for (let i = 1; i <= 5; i++) this.spots.push(new TruckSpot(`T${i}`));
   }
 
+  getAvailableSpotForWalkIn(type) {
+    return this.spots.find(spot => spot.type === type && spot.isAvailableForWalkIn()) || null;
+  }
+
+  getAvailableSpotForReservation(type, startTime, endTime) {
+    return this.spots.find(spot => spot.type === type && spot.isAvailable(startTime, endTime)) || null;
+  }
+
+  addReservation(reservation) {
+    this.reservations.set(reservation.id, reservation);
+  }
+
+  getReservation(id) {
+    return this.reservations.get(id);
+  }
+
   getAvailableSpots() {
     return this.spots.filter(spot => spot.isFree);
   }
 
-  getAvailableSpotByType(type) {
-    return this.spots.find(spot => spot.isFree && spot.type === type) || null;
+  getOccupiedSpots() {
+    return this.spots.filter(spot => !spot.isFree);
+  }
+
+  getSpotById(id) {
+    return this.spots.find(spot => spot.id === id) || null;
   }
 
   addTicket(ticket) {

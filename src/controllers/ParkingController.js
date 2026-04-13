@@ -7,9 +7,39 @@ const { CardPayment, CashPayment, UPIPayment } = require('../strategies/PaymentS
 const parkingService = new ParkingService();
 
 class ParkingController {
-  static park(req, res, next) {
+  
+  // RESERVATION SYSTEM
+  static createReservation(req, res, next) {
     try {
-      const { type, licensePlate } = req.body;
+      const { type, licensePlate, startTime, endTime } = req.body;
+      if (!type || !licensePlate || !startTime || !endTime) {
+         throw new AppError(400, 'Missing fields needed for reservation (type, licensePlate, startTime, endTime)');
+      }
+      if (!Object.values(VehicleType).includes(type)) throw new AppError(400, 'Invalid vehicle type');
+
+      const reservation = parkingService.createReservation(type, licensePlate, startTime, endTime);
+      res.status(201).json({ message: 'Reservation created successfully', reservation });
+    } catch (error) { next(error); }
+  }
+
+  static getReservation(req, res, next) {
+     try {
+       const { id } = req.params;
+       res.status(200).json({ reservation: parkingService.getReservation(id) });
+     } catch (error) { next(error); }
+  }
+
+  static cancelReservation(req, res, next) {
+     try {
+       const { id } = req.params;
+       res.status(200).json({ message: 'Reservation cancelled', reservation: parkingService.cancelReservation(id) });
+     } catch (error) { next(error); }
+  }
+
+  // CORE FUNCTIONS
+  static checkIn(req, res, next) {
+    try {
+      const { type, licensePlate, reservationId } = req.body;
 
       if (!type || !licensePlate) {
         throw new AppError(400, 'Vehicle type and license plate are required');
@@ -19,7 +49,7 @@ class ParkingController {
         throw new AppError(400, 'Invalid vehicle type');
       }
 
-      const ticket = parkingService.parkVehicle(type, licensePlate);
+      const ticket = parkingService.checkIn(type, licensePlate, reservationId);
       res.status(201).json({
         message: 'Vehicle parked successfully',
         ticket
@@ -29,7 +59,7 @@ class ParkingController {
     }
   }
 
-  static exit(req, res, next) {
+  static checkOut(req, res, next) {
     try {
       const { ticketId, pricingMethod = 'HOURLY', paymentMethod = 'CARD' } = req.body;
 
@@ -47,10 +77,10 @@ class ParkingController {
         default: paymentStrategy = new CardPayment(); break;
       }
 
-      const ticket = parkingService.exitVehicle(ticketId, pricingStrategy, paymentStrategy);
+      const ticket = parkingService.checkOut(ticketId, pricingStrategy, paymentStrategy);
 
       res.status(200).json({
-        message: 'Vehicle exited successfully',
+        message: 'Vehicle checked out successfully',
         ticket
       });
     } catch (error) {
@@ -58,14 +88,20 @@ class ParkingController {
     }
   }
 
+  // AVAILABILITY APIs
   static getAvailableSpots(req, res) {
     const spots = parkingService.getAvailableSpots();
-    res.status(200).json({ spots });
+    res.status(200).json({ count: spots.length, spots });
+  }
+
+  static getOccupiedSpots(req, res) {
+    const spots = parkingService.getOccupiedSpots();
+    res.status(200).json({ count: spots.length, spots });
   }
 
   static getAllSpots(req, res) {
     const spots = parkingService.getAllSpots();
-    res.status(200).json({ spots });
+    res.status(200).json({ count: spots.length, spots });
   }
 }
 
