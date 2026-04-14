@@ -10,17 +10,33 @@ class RideController {
 
   static getFareEstimate(req, res, next) {
     try {
-      const { pickupLat, pickupLng, dropLat, dropLng, vehicleType } = req.body;
-      const estimate = rateFareService.estimateFare(pickupLat, pickupLng, dropLat, dropLng, vehicleType);
+      const { pickupLat, pickupLng, dropLat, dropLng, vehicleType, rideType, numRiders } = req.body;
+      const estimate = rateFareService.estimateFare(pickupLat, pickupLng, dropLat, dropLng, vehicleType, rideType, numRiders);
       res.status(200).json({ status: 'success', estimate });
     } catch (error) { next(error); }
   }
 
   static requestRide(req, res, next) {
     try {
-      const { userId, pickupLat, pickupLng, dropLat, dropLng, vehicleType } = req.body;
-      const result = rideService.requestRide(userId, pickupLat, pickupLng, dropLat, dropLng, vehicleType);
+      const { userId, pickupLat, pickupLng, dropLat, dropLng, vehicleType, rideType } = req.body;
+      const result = rideService.requestRide(userId, pickupLat, pickupLng, dropLat, dropLng, vehicleType, rideType);
       res.status(201).json({ status: 'success', ...result });
+    } catch (error) { next(error); }
+  }
+
+  static joinSharedRide(req, res, next) {
+    try {
+      const { rideId } = req.params;
+      const { userId, pickupLat, pickupLng, dropLat, dropLng } = req.body;
+      const ride = rideService.joinSharedRide(rideId, userId, pickupLat, pickupLng, dropLat, dropLng);
+      res.status(200).json({ status: 'success', message: 'Successfully joined shared ride', ride });
+    } catch (error) { next(error); }
+  }
+
+  static getAvailableSharedRides(req, res, next) {
+    try {
+      const availableRides = rideService.driverMatchingService.sharedRideMatcher.getAvailableSharedRides();
+      res.status(200).json({ status: 'success', availableRides });
     } catch (error) { next(error); }
   }
 

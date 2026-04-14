@@ -2,12 +2,14 @@ const { PostgresStore } = require('../models/PostgresStore');
 const { RedisStore } = require('../models/RedisStore');
 const { ZookeeperLock } = require('../models/ZookeeperLock');
 const { calculateDistance } = require('../../common/utils/distanceCalculator');
+const { SharedRideMatcher } = require('./SharedRideMatcher');
 
 class DriverMatchingService {
   constructor() {
     this.postgresStore = PostgresStore.getInstance();
     this.redisStore = RedisStore.getInstance();
     this.zookeeperLock = ZookeeperLock.getInstance();
+    this.sharedRideMatcher = new SharedRideMatcher();
   }
 
   findNearbyDrivers(pickupLat, pickupLng, vehicleType) {

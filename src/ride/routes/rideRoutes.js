@@ -7,6 +7,11 @@ const router = Router();
 // --- User APIs ---
 router.post('/api/fare', RideController.getFareEstimate);
 router.post('/api/rides/request', RideController.requestRide);
+
+// Shared Ride Specific Endpoints
+router.get('/api/ride/available-shared', RideController.getAvailableSharedRides);
+router.post('/api/ride/join/:rideId', RideController.joinSharedRide);
+
 router.get('/api/rides/history', RideController.getRideHistory);
 router.post('/api/rides/:rideId/cancel', RideController.cancelRide);
 router.post('/api/rides/:rideId/ratings', RideController.submitRating);

@@ -16,4 +16,12 @@ class CarFareStrategy extends FareCalculationStrategy {
   }
 }
 
-module.exports = { FareCalculationStrategy, BikeFareStrategy, CarFareStrategy };
+class SharedCarFareStrategy extends FareCalculationStrategy {
+  calculateFare(distanceInKm, durationInMins = 0, numRiders = 1) {
+    const totalFare = (distanceInKm * 60) + (durationInMins * 1);
+    // Split fare among riders
+    return totalFare / Math.max(numRiders, 1); 
+  }
+}
+
+module.exports = { FareCalculationStrategy, BikeFareStrategy, CarFareStrategy, SharedCarFareStrategy };
