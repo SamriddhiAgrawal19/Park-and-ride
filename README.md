@@ -76,27 +76,59 @@ stateDiagram-v2
 ## 🏗️ 3. High-Level Design (HLD)
 
 ### 3.1 System Architecture
-The architecture is designed to support event-driven modules, ensuring modularity and scalability.
+The architecture is designed to support event-driven modules, ensuring modularity and scalability. Below is the detailed High-Level Design (HLD) breaking down the system into localized logical components.
 
 ```mermaid
 graph TD
+    %% Entry Layer
     Client[Mobile/Web Client] --> LB[Load Balancer]
     LB --> Gateway[API Gateway / Express]
 
-    Gateway --> ParkingService[Parking Service]
-    Gateway --> RideService[Ride Service]
-    Gateway --> PaymentService[Payment Service]
+    %% Gateway to Services
+    Gateway --> PS_Facade{{Parking Service}}
+    Gateway --> RS_Facade{{Ride Service}}
+    Gateway --> PayS_Facade{{Payment Service}}
 
-    RideService --> Zookeeper[Zookeeper - Distributed Lock]
-    RideService --> Redis[Redis - Location Cache]
-    RideService --> Kafka[Kafka - Event Streaming]
+    %% Core Services Layer
+    subgraph Parking [Parking System]
+        PS_Facade -.-> SpotMgr[Spot Manager]
+        PS_Facade -.-> ResMgr[Reservation Manager]
+        PS_Facade -.-> TktMgr[Ticket Manager]
+        SpotMgr --- AvailTrk[Availability Tracker]
+        TktMgr --- PriceMod[Pricing Module]
+    end
 
-    ParkingService --> MongoDB[(MongoDB - Primary DB)]
-    RideService --> MongoDB
-    PaymentService --> MongoDB
+    subgraph Ride [Ride System]
+        RS_Facade -.-> DrvMatch[Driver Matching]
+        RS_Facade -.-> SharedMatch[Shared Ride Matcher]
+        RS_Facade -.-> RideLife[Ride Lifecycle Manager]
+    end
 
-    PaymentService --> Razorpay[Razorpay Gateway]
+    subgraph Payment [Payment System]
+        PayS_Facade -.-> PayProc[Payment Processor]
+        PayS_Facade -.-> TxMgr[Transaction Manager]
+    end
+
+    %% Distributed Tech & Caching
+    DrvMatch --> Redis[(Redis - Cache)]
+    DrvMatch --> Zookeeper[Zookeeper - Locks]
+    RideLife --> Kafka[Kafka - Events]
+
+    %% Primary DB Layer
+    PS_Facade --> MongoDB[(MongoDB)]
+    RS_Facade --> MongoDB
+    PayS_Facade --> MongoDB
+
+    %% External Integrations
+    PayProc --> Razorpay[Razorpay Gateway]
 ```
+
+**Component Explanations:**
+* **API Gateway & Entry Layer:** The Load Balancer and API Gateway handle initial routing and request validation, securely passing traffic to the appropriate stateless core services.
+* **Parking Service:** Contains the **Spot Manager** and **Availability Tracker** (for finding and allocating spots), the **Reservation Manager** (for ahead-of-time bookings), and the **Ticket Manager** and **Pricing Module** (for entry/exit flow handling and fee calculations).
+* **Ride Service:** The core ride system. Features **Driver Matching** (connecting isolated rides), **Shared Ride Matcher** (route-based carpool joining), and a **Ride Lifecycle Manager** (managing states like STARTED/COMPLETED). It interacts with Redis (fast driver location caching), Zookeeper (prevents driver double-booking conflicts), and Kafka (handles system-wide event updates asynchronously).
+* **Payment Service:** Dedicated pipeline where the **Transaction Manager** controls data consistency and prevents partial payments, while the **Payment Processor** directly integrates with external gateways like Razorpay for final execution.
+* **Database Layer:** **MongoDB** functions as the primary operational database. All architectural services safely interact directly with MongoDB to fetch or store data, maintaining state persistence independently.
 
 ### 3.2 Why Modular Architecture?
 By separating Parking, Ride, and Payment logic into distinct domains, the codebases remain decoupled. This allows scaling the `Ride Service` (which faces higher traffic due to location tracking queries) entirely independently from the `Parking Service`.
