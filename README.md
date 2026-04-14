@@ -4,22 +4,19 @@
 
 ---
 
-## 📖 1. Introduction
+## 📖 1. Introduction & Problem Statement
 
 Urban cities face three major transportation problems:
-1. **Traffic congestion**
-2. **Unpredictable parking availability**
-3. **Last-mile connectivity issues**
+1. **Traffic Congestion & Carbon Emissions:** The majority of cars on the road contain only one passenger. This under-utilization contributes to heavy traffic jams and increased carbon footprints.
+2. **Unpredictable Parking Availability:** Drivers spend a significant amount of time circling blocks looking for parking, wasting fuel and causing severe frustration. 
+3. **Last-Mile Connectivity Issues:** Public transit rarely takes passengers exactly to their doorstep. The gap between a transit hub (or a central parking lot) and the final destination is broken.
 
-The **Park & Ride System** is a unified platform designed to solve these problems by integrating smart parking management with ride-sharing services. 
+The **Park & Ride System** is a unified platform designed to solve these exact problems by integrating smart parking management with intelligent ride-sharing services. 
 
-The platform allows users to:
-* **Reserve** parking slots before arrival.
-* **Check-in and check-out** through automated ticketing.
-* **Book solo or shared rides** to reach their final destinations directly from their parking spot.
-* **Pay** for parking and ride services through a unified, idempotent payment system.
-
-By optimizing parking utilization and enabling seamless multi-modal transportation, this backend serves as a scalable solution to the urban mobility crisis.
+### How We Solve It
+* **Predictable Parking:** Users can pre-book spaces or view real-time availability over APIs, terminating the guesswork of finding a spot.
+* **Integrated Multi-Modal Transport:** A user can park their primary vehicle at a central hub and immediately summon a smart ride to their final "last-mile" destination, all from one unified system.
+* **Shared Rides / Carpooling:** By mathematically matching riders taking similar routes and pooling them into the same car securely, we reduce the total number of vehicles on the road, directly combating congestion.
 
 ---
 
@@ -49,7 +46,63 @@ By optimizing parking utilization and enabling seamless multi-modal transportati
 
 ---
 
-## 🏗️ 3. System Architecture & Tech Stack
+## 🔄 3. System Flow (Flowcharts)
+
+### Parking System Flow
+```mermaid
+stateDiagram-v2
+    [*] --> SearchSpots: User Checks Availability
+    SearchSpots --> ReserveSpot: Books a Spot (Optional)
+    ReserveSpot --> CheckIn: Arrives at Gate
+    SearchSpots --> CheckIn: Arrives as Walk-in
+    
+    state CheckIn {
+        ValidateReservation --> GenerateTicket: If Reserved
+        FindEmptySpot --> GenerateTicket: If Walk-in
+    }
+    
+    CheckIn --> Parked: Parks Vehicle
+    Parked --> CheckOut: Leaves Parking Lot
+    
+    state CheckOut {
+        CalculateDuration --> ApplyPricingStrategy
+        ApplyPricingStrategy --> ProcessPayment
+    }
+    
+    CheckOut --> [*]: Gate Opens
+```
+
+### Ride Sharing System Flow
+```mermaid
+stateDiagram-v2
+    [*] --> RequestRide: User Enters Destination
+    RequestRide --> SoloCheck: Choose Ride Type
+    
+    SoloCheck --> MatchDriver: Solo Ride
+    SoloCheck --> SharedRide: Carpool (Shared)
+    
+    state SharedRide {
+        FindExistingRoute --> JoinRide: Matches Existing Route
+        FindExistingRoute --> MatchDriver: No Match, Create New
+    }
+    
+    state MatchDriver {
+        FetchRedisDrivers --> CalculateHaversineDistance
+        CalculateHaversineDistance --> ZookeeperLockDriver
+        ZookeeperLockDriver --> PingDriver
+    }
+    
+    MatchDriver --> Accepted: Driver Accepts
+    JoinRide --> Accepted: Joins Existing
+    
+    Accepted --> Started: Driver Arrives
+    Started --> Completed: Reaches Destination & Pays
+    Completed --> [*]
+```
+
+---
+
+## 🏗️ 4. System Architecture & Tech Stack
 
 This system strictly follows a **Modular Layered Architecture** to guarantee separation of concerns, unit testability, and isolated scaling.
 
@@ -85,7 +138,7 @@ This system strictly follows a **Modular Layered Architecture** to guarantee sep
 
 ---
 
-## 📂 4. Project Folder Structure
+## 📂 5. Project Folder Structure
 
 ```text
 src/
@@ -113,96 +166,174 @@ src/
 
 ---
 
-## 🧩 5. Deep Dive: Parking System Design
+## 🧩 6. Deep Dive: Parking System Design
 
 The parking system actively manages the supply (Parking Spots) and demand (Vehicles). 
 
-### Core Flow
-1. **Reservation**: User books a time window.
-2. **Check-in**: System generates a structural spot mapping and active `Ticket`.
-3. **Checkout**: Identifies exit time, delegates to a strategy, and calculates fee.
-4. **Payment**: Transacts fee and vacates spot.
+### 🔄 Step-By-Step Logic & Flow
 
-### 💻 Code Snippet: Check Out & Payment Delegation
-*Why this approach?* By decoupling the checkout process from the pricing calculation, we can easily change parking rates (e.g., Weekend vs Weekday) without altering the core checkout physics. 
+#### 1. Checking Availability & Searching for Parking
+Before heading to a parking lot or making a reservation, users can check for available spots. 
+* **API Target:** `GET /api/spots/available`
+* **Code Handling:** The system accesses the singleton `ParkingLot` to filter and return currently vacant spots.
+```javascript
+// src/parking/controllers/ParkingController.js
+static getAvailableSpots(req, res) {
+  // Accesses the in-memory array of Spot objects
+  const spots = parkingService.getAvailableSpots();
+  res.status(200).json({ count: spots.length, spots });
+}
+```
 
+#### 2. Booking / Reserving a Parking Spot
+Users provide their vehicle details and requested time window to secure a spot.
+* **API Target:** `POST /api/reservations`
+* **Edge Case Handled:** Ensures end time is after start time, and inherently blocks double-booking by allocating an exclusive `Reservation` object directly to a specific spot.
 ```javascript
 // src/parking/services/ParkingService.js
-checkOut(ticketId) {
-  const ticket = this.activeTickets.get(ticketId);
-  if (!ticket) throw new Error("Ticket not found");
+createReservation(type, licensePlate, startTime, endTime) {
+  if (new Date(startTime) >= new Date(endTime)) {
+    throw new AppError(400, 'End time must be after start time');
+  }
+  // Finds a spot not overlapping with existing time windows
+  const spot = this.parkingLot.getAvailableSpotForReservation(type, startTime, endTime);
+  if (!spot) throw new AppError(400, 'No available spots for this time period');
 
-  ticket.exitTime = new Date();
+  const reservation = new Reservation(type, licensePlate, startTime, endTime);
+  spot.reserve(reservation); // Locks the spot for this time slot
+  return reservation;
+}
+```
+
+#### 3. Check-In (Generating a Ticket)
+When a car arrives at the gate, we generate a formal ticket tracking their actual entry timestamp.
+* **API Target:** `POST /api/checkin`
+* **Logic:** Differentiates between a walk-in and a reserved vehicle. Validates license plate against the reservation.
+* **Edge Case Handled:** Actively stops the *same physical car* from accidentally obtaining 2 active tickets inside the lot.
+```javascript
+// src/parking/services/ParkingService.js
+checkIn(type, licensePlate, reservationId = null) {
+  // Edge Case: Prevent double check-in mapping errors
+  const existingTicket = Array.from(this.parkingLot.tickets.values())
+    .find(t => t.vehicle.licensePlate === licensePlate && t.status === 'ACTIVE');
+  if (existingTicket) throw new AppError(400, 'Vehicle is already parked inside');
+
+  // Automatically allocates the correct physical spot context
+  let spot = reservationId ? 
+      this.handleReservedCheckIn(reservationId, licensePlate) :
+      this.handleWalkInCheckIn(type); 
+      
+  const ticket = new Ticket(randomUUID(), vehicle, spot);
+  return ticket;
+}
+```
+
+#### 4. Check-Out & Payment Calculation
+The user drives out. We freeze the chronological duration, delegate to a pricing configuration, process funds, and finally free the physical spot.
+* **API Target:** `POST /api/checkout`
+* **System Design Concept - Strategy Pattern:** By feeding the `checkOut` method abstracted Payment and Pricing strategies, we can change rate schemas (Daily vs Hourly) without altering the fundamental physics of vacating the spot.
+```javascript
+// src/parking/services/ParkingService.js
+checkOut(ticketId, pricingStrategy, paymentStrategy) {
+  const ticket = this.parkingLot.getTicket(ticketId);
   
-  // Strategy Pattern: Dynamically assign pricing logic based on vehicle type
-  const fee = this.pricingStrategy.calculateFee(ticket);
+  // Calculate Duration
+  let durationInHours = Math.abs(new Date() - ticket.entryTime.getTime()) / 36e5;
+  if (durationInHours < 1) durationInHours = 1;
   
-  // Closes ticket internally calling parkingSpot.vacate()
-  ticket.closeTicket(fee); 
+  // Execute Strategy Patterns
+  const fee = pricingStrategy.calculateFee(durationInHours, ticket.vehicle.type);
+  const paymentSuccess = paymentStrategy.processPayment(fee);
+  
+  if (!paymentSuccess) throw new AppError(500, 'Payment failed');
+  
+  ticket.closeTicket(fee); // Vacates spot internally
   return ticket;
 }
 ```
 
 ---
 
-## 🚖 6. Deep Dive: Ride Sharing & Carpool System
+## 🚖 7. Deep Dive: Ride Sharing & Carpool System
 
-This module connects idle drivers to users.
+This module is designed to connect drivers efficiently to passengers, supporting single trips and multi-passenger carpool routing.
 
-### 💻 Code Snippet: Joining a Shared Ride
-*Why this approach?* Supporting carpools lowers urban footprint and costs. However, we must ensure maximum capacity constraints and strict deviation calculations (so existing riders aren't taken on massive detours).
+### 🔄 Step-By-Step Logic & Flow
 
-```javascript
-// src/ride/services/SharedRideMatcher.js
-joinSharedRide(rideId, userId, pickupLoc, dropLoc) {
-  const ride = this.postgresStore.getRide(rideId);
-  
-  // EDGE CASE: Capacity Overflow
-  if (ride.availableSeats <= 0) {
-      throw new Error('Ride is already full capacity');
-  }
-
-  // ALGORITHM: Validate Haversine proximity for pickup vectors
-  const validProximity = this.validatePathsIntersect(ride.pickupLoc, pickupLoc);
-  if (!validProximity) {
-      throw new Error('Detour is too far');
-  }
-
-  // Bind to ride
-  ride.currentRiders.push({ userId, pickup: pickupLoc, drop: dropLoc });
-  ride.availableSeats -= 1;
-  return ride;
-}
-```
-
-### 💻 Code Snippet: Driver Matching & Distributed Locks
-*Why this approach?* In a highly concurrent environment (millions of users), two users might hit "Request Ride" simultaneously next to the same driver. If the DB isn't locked, they both get assigned the same car.
-
+#### 1. Requesting a Ride & Matching Drivers
+A user signals intent to travel from A to B. 
+* **API Target:** `POST /v1/api/rides/request`
+* **System Design Concept - In-Memory Caching (Redis) & Distributed Locking (Zookeeper):** Millions of GPS coordinates are pushed every minute. We cache active drivers in Redis for fast geospatial querying. However, two users might request a ride next to the exact same driver. We use Zookeeper locks to ensure one driver is an atomic entity, preventing double-bookings.
 ```javascript
 // src/ride/services/DriverMatchingService.js
 findNearbyDrivers(pickupLat, pickupLng, vehicleType) {
-  // 1. Fetch available drivers from FAST in-memory Redis cache
+  // 1. Fetch available drivers rapidly from Redis Cache
   const availableDrivers = this.redisStore.getActiveDriversList();
 
-  // 2. Sort by nearest physically (Haversine Distance)
+  // 2. Sort by geographical proximity (Haversine Distance Algorithm)
   availableDrivers.sort((a, b) => a.distance - b.distance);
 
   const eligibleDrivers = [];
   for (const driver of availableDrivers) {
-    // 3. ATTEMPT ZOOKEEPER LOCK
-    // This atomic operation prevents concurrent double-booking of a driver
+    // 3. ZOOKEEPER LOCK: Atomically secures driver so another thread doesn't steal them
     if (this.zookeeperLock.acquireLock(driver.driverId)) {
       eligibleDrivers.push(driver);
-      if (eligibleDrivers.length >= 3) break; // Ping top 3 drivers
+      if (eligibleDrivers.length >= 3) break; // Ping the top 3 closest drivers
     }
   }
   return eligibleDrivers;
 }
 ```
 
+#### 2. Evaluating & Joining a Shared Ride (Carpool)
+If the user specifies `rideType: 'shared'`, the system optimizes by attempting to slot them into an existing vehicle moving the same way.
+* **API Target:** `POST /v1/api/rides/join-shared`
+* **Edge Case Handling (Capacity constraints):** Mathematically verifies that merging trajectories does not result in an unreasonable detour for existing passengers. Further ensures `availableSeats` never breaches maximum limits, preventing legal overcrowding.
+```javascript
+// src/ride/services/RideService.js
+if (rideType === 'shared') {
+  // Scans currently active rides for structural overlaps
+  const existingRide = this.driverMatchingService.sharedRideMatcher
+                           .findMatchingSharedRide(pickupLat, pickupLng, dropLat, dropLng);
+  
+  if (existingRide) {
+    if (existingRide.currentRiders.find(r => r.userId === userId)) {
+      throw new Error('Rider is already part of this ride'); // Edge Case Handling
+    }
+    // Mutates state and occupies a seat constraint safely
+    existingRide.currentRiders.push({ userId, pickup: pickupLoc, drop: dropLoc });
+    existingRide.availableSeats -= 1;
+    return existingRide;
+  }
+}
+```
+
+#### 3. Ride Lifecycle Execution
+After driver match, the real-world trip occurs. We enforce a strict finite state machine: `REQUESTED` → `ACCEPTED` → `STARTED` → `COMPLETED`.
+* **API Targets:** `POST /v1/api/rides/accept`, `POST /v1/api/rides/start`
+* **System Design Concept - Observer / Pub-Sub Pattern:** Notification hooks are triggered when state shifts so the passenger apps organically update their UI without excessive polling.
+```javascript
+// src/ride/services/RideService.js
+acceptRide(rideId, driverId) {
+  const ride = this.postgresStore.getRide(rideId);
+  if (ride.status !== 'REQUESTED') throw new Error('Ride is no longer available'); // Enforce FSM state
+  
+  ride.status = 'ACCEPTED';
+  
+  // Releases the lock since the transaction logic succeeded
+  this.driverMatchingService.releaseDriverLock(driverId);
+  
+  // Observer Pattern: Push update to passenger socket
+  ride.currentRiders.forEach(r => {
+      this.notificationService.notifyRider(r.userId, `Driver accepted your ride.`);
+  });
+  return ride;
+}
+```
+
 ---
 
-## ⚙️ 7. Database Design (ER & Schemas)
+## ⚙️ 8. Database Design (ER & Schemas)
 
 By strictly defining the NoSQL structure, we pave the way for heavy geographical queries (`$nearSphere` in MongoDB).
 
@@ -251,7 +382,7 @@ By strictly defining the NoSQL structure, we pave the way for heavy geographical
 
 ---
 
-## 🎨 8. Design Patterns Used
+## 🎨 9. Design Patterns Used
 
 Implementing strict Software Engineering Design patterns ensures stability:
 
@@ -261,7 +392,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🛡️ 9. Edge Case Handling (Why & How)
+## 🛡️ 10. Edge Case Handling (Why & How)
 
 | Scenario | Handled By | Why it is handled this way |
 | :--- | :--- | :--- |
@@ -272,7 +403,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🌐 10. API Documentation Reference
+## 🌐 11. API Documentation Reference
 
 *For full payloads, view Postman environments.*
 
@@ -293,7 +424,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🚀 11. Future Scope & Extensibility
+## 🚀 12. Future Scope & Extensibility
 
 If given further runway, the architecture supports:
 1. **Real-time WebSockets (Socket.IO)**: Replacing polling mechanisms with active bi-directional streams for visualizing a car moving flawlessly across a mobile map.
