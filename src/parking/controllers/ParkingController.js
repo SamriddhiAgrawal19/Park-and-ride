@@ -1,5 +1,5 @@
 const { ParkingService } = require('../services/ParkingService');
-const { AppError } = require('../utils/errors');
+const { AppError } = require('../../common/utils/errors');
 const { VehicleType } = require('../models/Vehicle');
 const { HourlyPricingStrategy, DailyPricingStrategy } = require('../strategies/PricingStrategy');
 const { CardPayment, CashPayment, UPIPayment } = require('../strategies/PaymentStrategy');
