@@ -1,54 +1,23 @@
-# 🚗 Park & Ride System
+# 🚗 Park & Ride System - Architecture & System Design Document
 **Smart Parking & Last-Mile Connectivity Platform**  
 *Team: Code Fusion*
 
 ---
 
-## 📖 1. Introduction & Problem Statement
+## 🎯 1. Introduction & Problem Statement
 
 Urban cities face three major transportation problems:
-1. **Traffic Congestion & Carbon Emissions:** The majority of cars on the road contain only one passenger. This under-utilization contributes to heavy traffic jams and increased carbon footprints.
-2. **Unpredictable Parking Availability:** Drivers spend a significant amount of time circling blocks looking for parking, wasting fuel and causing severe frustration. 
-3. **Last-Mile Connectivity Issues:** Public transit rarely takes passengers exactly to their doorstep. The gap between a transit hub (or a central parking lot) and the final destination is broken.
+1. **Traffic Congestion & Carbon Emissions:** Under-utilization of vehicles contributes to heavy traffic jams.
+2. **Unpredictable Parking Availability:** Drivers waste fuel and time circling blocks looking for parking.
+3. **Last-Mile Connectivity Issues:** The gap between a transit hub (or central parking) and the final destination is broken.
 
-The **Park & Ride System** is a unified platform designed to solve these exact problems by integrating smart parking management with intelligent ride-sharing services. 
-
-### How We Solve It
-* **Predictable Parking:** Users can pre-book spaces or view real-time availability over APIs, terminating the guesswork of finding a spot.
-* **Integrated Multi-Modal Transport:** A user can park their primary vehicle at a central hub and immediately summon a smart ride to their final "last-mile" destination, all from one unified system.
-* **Shared Rides / Carpooling:** By mathematically matching riders taking similar routes and pooling them into the same car securely, we reduce the total number of vehicles on the road, directly combating congestion.
+**Our Solution:** The Park & Ride System integrates smart parking management with intelligent ride-sharing. Users can pre-book parking predictably, and seamlessly transition into a mathematically routed shared carpool for their last mile, reducing congestion and unifying the transit experience.
 
 ---
 
-## ✨ 2. Key Features
+## 🔄 2. System Flow Diagrams
 
-### 🅿️ Smart Parking Management
-* Real-time parking slot visibility.
-* Pre-booking of parking spaces.
-* Automated ticket generation with QR-code abstraction.
-* Dynamic pricing based on vehicle type and duration.
-
-### 🚖 Ride Sharing (Solo & Carpool)
-* Booking of Solo Rides.
-* Booking of Shared Carpool Rides (`rideType: 'shared'`).
-* Real-time ride status lifecycle (`REQUESTED` → `ACCEPTED` → `STARTED` → `COMPLETED`).
-
-### 🧠 Intelligent Matching & Constraints
-* **Haversine Distance Algorithm**: Matches closest drivers utilizing geographic coordinate math.
-* **Geo-Proximity Driver Search**: Allows bounding constraints (e.g., matching within 1.5km radius).
-* **Distributed Locking (Zookeeper)**: Prevents the same driver from being double-booked by concurrent ride requests.
-* **Capacity Validation**: Strictly ensures vehicle occupancy is never exceeded during carpools.
-
-### 💳 Payment System
-* Unified payment gateway supporting both parking tickets and passenger rides.
-* Integrated with Razorpay for secure checkout logic.
-* **Idempotent Transactions**: Prevents duplicate billing on network retries.
-
----
-
-## 🔄 3. System Flow (Flowcharts)
-
-### Parking System Flow
+### Parking Flow Diagram
 ```mermaid
 stateDiagram-v2
     [*] --> SearchSpots: User Checks Availability
@@ -71,8 +40,9 @@ stateDiagram-v2
     
     CheckOut --> [*]: Gate Opens
 ```
+**Backend Connection:** This flow represents the core Parking Finite State Machine. The system leverages an in-memory spot tracker during `SearchSpots`. `CheckIn` functions as a fork where the system validates existing DB reservations or provisions an active spot allocation. `CheckOut` acts as the termination node where Strategy patterns fire off calculation events before unlocking the spot for the next cycle.
 
-### Ride Sharing System Flow
+### Ride Sharing Flow Diagram
 ```mermaid
 stateDiagram-v2
     [*] --> RequestRide: User Enters Destination
@@ -99,513 +69,343 @@ stateDiagram-v2
     Started --> Completed: Reaches Destination & Pays
     Completed --> [*]
 ```
+**Backend Connection:** This flow manages the lifecycle of a driver assignment. It diverges immediately on ride type. If `SharedRide` is triggered, the system bypasses pinging isolated drivers if an overlap succeeds. The critical path is `MatchDriver`, where geospatial caching (Redis) hands over to cluster coordination (Zookeeper/Locks) to guarantee an atomic assignment before transitioning to `Accepted`.
 
 ---
 
-## 🏗️ 4. System Architecture & Tech Stack
+## 🏗️ 3. High-Level Design (HLD)
 
-This system strictly follows a **Modular Layered Architecture** to guarantee separation of concerns, unit testability, and isolated scaling.
+### 3.1 System Architecture
+The architecture is designed to support event-driven modules, ensuring modularity and scalability.
 
-```text
-[ Client (Mobile / Web) ]
-        │
-        ▼
-[ API Gateway (Express Router) ]  --> Defines Routes
-        │
-        ▼
-[ Controllers ]  --> Extracts Request Data, Issues HTTP Responses
-        │
-        ▼
-[ Services ] --> Core Business & Orchestration Logic
-        │
-        ▼
-[ Strategies ] --> Design Patterns (Fare Calculation / Pricing)
-        │
-        ▼
-[ Models / DB Layer ] --> Data Objects, Redis Caching, DB Storage
+```mermaid
+graph TD
+    Client[Mobile/Web Client] --> LB[Load Balancer]
+    LB --> Gateway[API Gateway / Express]
+
+    Gateway --> ParkingService[Parking Service]
+    Gateway --> RideService[Ride Service]
+    Gateway --> PaymentService[Payment Service]
+
+    RideService --> Zookeeper[Zookeeper - Distributed Lock]
+    RideService --> Redis[Redis - Location Cache]
+    RideService --> Kafka[Kafka - Event Streaming]
+
+    ParkingService --> MongoDB[(MongoDB - Primary DB)]
+    RideService --> MongoDB
+    PaymentService --> MongoDB
+
+    PaymentService --> Razorpay[Razorpay Gateway]
 ```
 
-### 🛠️ Technology Stack
-| Technology | Purpose | Why We Chose This |
-| :--- | :--- | :--- |
-| **Node.js** | Backend Runtime | Non-blocking, event-driven architecture naturally scales for high I/O operations (concurrent ride requests, constant GPS updates). |
-| **Express.js** | REST Framework | Minimalist routing suited for clean API endpoint creation. |
-| **MongoDB** | Database | NoSQL document database perfect for storing adaptable schemas like `Ride` and `Ticket` entities. |
-| **Redis** | In-Memory Cache | Extremely fast lookups. Used here to store and retrieve active, available drivers. |
-| **Zookeeper** | Distributed Lock | Vital for preventing race conditions when two users hail the same nearby driver. |
-| **Kafka** | Event Streaming | Handles high-throughput payload streams (like real-time moving coordinates). |
-| **Razorpay** | Payment Gateway | Reliable 3rd party processor for local checkout logic. |
+### 3.2 Why Modular Architecture?
+By separating Parking, Ride, and Payment logic into distinct domains, the codebases remain decoupled. This allows scaling the `Ride Service` (which faces higher traffic due to location tracking queries) entirely independently from the `Parking Service`.
+
+### 3.3 System Data Flow
+- **Low-Latency Path (Redis):** Driver location updates are pushed directly to memory infrastructure.
+- **Transactional Path (MongoDB):** Persistent states like ride completions, reservations, and ticket generation.
+- **Consistency Path (Zookeeper):** Acquiring strict synchronization guarantees during driver assignment.
 
 ---
 
-## 📂 5. Project Folder Structure
+## 🧩 4. Low-Level Design (LLD)
 
-```text
-src/
-├── common/
-│   └── utils/ (distanceCalculator.js, logger.js, errors.js)
-├── parking/
-│   ├── controllers/ (ParkingController.js)
-│   ├── models/ (ParkingLot.js, ParkingSpot.js, Ticket.js, Vehicle.js, Reservation.js)
-│   ├── routes/ (parkingRoutes.js)
-│   ├── services/ (ParkingService.js)
-│   └── strategies/ (PricingStrategy.js, PaymentStrategy.js)
-├── ride/
-│   ├── controllers/ (RideController.js, DriverController.js)
-│   ├── models/ (Ride.js, Driver.js, RedisStore.js, PostgresStore.js, ZookeeperLock.js)
-│   ├── routes/ (rideRoutes.js)
-│   ├── services/ (RideService.js, DriverMatchingService.js, SharedRideMatcher.js)
-│   └── strategies/ (FareCalculationStrategy.js)
-└── payment/
-    ├── controllers/ (paymentController.js)
-    ├── models/ (Payment.js)
-    └── routes/ (paymentRoutes.js)
-```
+### 4.1 Class Level Design
+The application utilizes standard GOF design patterns to maintain stable and extensible logic.
 
-*(Note: Modules are completely decoupled. The Parking module knows nothing about the Ride module, making microservice extraction trivial).*
-
----
-
-## 🧩 6. Deep Dive: Parking System Design
-
-The parking system actively manages the supply (Parking Spots) and demand (Vehicles). 
-
-### 🔄 Step-By-Step Logic & Flow
-
-#### 1. Checking Availability & Searching for Parking
-Before heading to a parking lot or making a reservation, users can check for available spots. 
-* **API Target:** `GET /api/spots/available`
-* **Code Handling:** The system accesses the singleton `ParkingLot` to filter and return currently vacant spots.
-```javascript
-// src/parking/controllers/ParkingController.js
-static getAvailableSpots(req, res) {
-  // Accesses the in-memory array of Spot objects
-  const spots = parkingService.getAvailableSpots();
-  res.status(200).json({ count: spots.length, spots });
-}
-```
-
-#### 2. Booking / Reserving a Parking Spot
-Users provide their vehicle details and requested time window to secure a spot.
-* **API Target:** `POST /api/reservations`
-* **Edge Case Handled:** Ensures end time is after start time, and inherently blocks double-booking by allocating an exclusive `Reservation` object directly to a specific spot.
-```javascript
-// src/parking/services/ParkingService.js
-createReservation(type, licensePlate, startTime, endTime) {
-  if (new Date(startTime) >= new Date(endTime)) {
-    throw new AppError(400, 'End time must be after start time');
-  }
-  // Finds a spot not overlapping with existing time windows
-  const spot = this.parkingLot.getAvailableSpotForReservation(type, startTime, endTime);
-  if (!spot) throw new AppError(400, 'No available spots for this time period');
-
-  const reservation = new Reservation(type, licensePlate, startTime, endTime);
-  spot.reserve(reservation); // Locks the spot for this time slot
-  return reservation;
-}
-```
-
-#### 3. Check-In (Generating a Ticket)
-When a car arrives at the gate, we generate a formal ticket tracking their actual entry timestamp.
-* **API Target:** `POST /api/checkin`
-* **Logic:** Differentiates between a walk-in and a reserved vehicle. Validates license plate against the reservation.
-* **Edge Case Handled:** Actively stops the *same physical car* from accidentally obtaining 2 active tickets inside the lot.
-```javascript
-// src/parking/services/ParkingService.js
-checkIn(type, licensePlate, reservationId = null) {
-  // Edge Case: Prevent double check-in mapping errors
-  const existingTicket = Array.from(this.parkingLot.tickets.values())
-    .find(t => t.vehicle.licensePlate === licensePlate && t.status === 'ACTIVE');
-  if (existingTicket) throw new AppError(400, 'Vehicle is already parked inside');
-
-  // Automatically allocates the correct physical spot context
-  let spot = reservationId ? 
-      this.handleReservedCheckIn(reservationId, licensePlate) :
-      this.handleWalkInCheckIn(type); 
-      
-  const ticket = new Ticket(randomUUID(), vehicle, spot);
-  return ticket;
-}
-```
-
-#### 4. Check-Out & Payment Calculation
-The user drives out. We freeze the chronological duration, delegate to a pricing configuration, process funds, and finally free the physical spot.
-* **API Target:** `POST /api/checkout`
-* **System Design Concept - Strategy Pattern:** By feeding the `checkOut` method abstracted Payment and Pricing strategies, we can change rate schemas (Daily vs Hourly) without altering the fundamental physics of vacating the spot.
-```javascript
-// src/parking/services/ParkingService.js
-checkOut(ticketId, pricingStrategy, paymentStrategy) {
-  const ticket = this.parkingLot.getTicket(ticketId);
-  
-  // Calculate Duration
-  let durationInHours = Math.abs(new Date() - ticket.entryTime.getTime()) / 36e5;
-  if (durationInHours < 1) durationInHours = 1;
-  
-  // Execute Strategy Patterns
-  const fee = pricingStrategy.calculateFee(durationInHours, ticket.vehicle.type);
-  const paymentSuccess = paymentStrategy.processPayment(fee);
-  
-  if (!paymentSuccess) throw new AppError(500, 'Payment failed');
-  
-  ticket.closeTicket(fee); // Vacates spot internally
-  return ticket;
-}
-```
-
----
-
-## 🚖 7. Deep Dive: Ride Sharing & Carpool System
-
-This module is designed to connect drivers efficiently to passengers, supporting single trips and multi-passenger carpool routing.
-
-### 🔄 Step-By-Step Logic & Flow
-
-#### 1. Requesting a Ride & Matching Drivers
-A user signals intent to travel from A to B. 
-* **API Target:** `POST /v1/api/rides/request`
-* **System Design Concept - In-Memory Caching (Redis) & Distributed Locking (Zookeeper):** Millions of GPS coordinates are pushed every minute. We cache active drivers in Redis for fast geospatial querying. However, two users might request a ride next to the exact same driver. We use Zookeeper locks to ensure one driver is an atomic entity, preventing double-bookings.
-```javascript
-// src/ride/services/DriverMatchingService.js
-findNearbyDrivers(pickupLat, pickupLng, vehicleType) {
-  // 1. Fetch available drivers rapidly from Redis Cache
-  const availableDrivers = this.redisStore.getActiveDriversList();
-
-  // 2. Sort by geographical proximity (Haversine Distance Algorithm)
-  availableDrivers.sort((a, b) => a.distance - b.distance);
-
-  const eligibleDrivers = [];
-  for (const driver of availableDrivers) {
-    // 3. ZOOKEEPER LOCK: Atomically secures driver so another thread doesn't steal them
-    if (this.zookeeperLock.acquireLock(driver.driverId)) {
-      eligibleDrivers.push(driver);
-      if (eligibleDrivers.length >= 3) break; // Ping the top 3 closest drivers
+```mermaid
+classDiagram
+    class VehicleFactory {
+        +createVehicle(type, licensePlate)
     }
-  }
-  return eligibleDrivers;
-}
-```
-
-#### 2. Evaluating & Joining a Shared Ride (Carpool)
-If the user specifies `rideType: 'shared'`, the system optimizes by attempting to slot them into an existing vehicle moving the same way.
-* **API Target:** `POST /v1/api/rides/join-shared`
-* **Edge Case Handling (Capacity constraints):** Mathematically verifies that merging trajectories does not result in an unreasonable detour for existing passengers. Further ensures `availableSeats` never breaches maximum limits, preventing legal overcrowding.
-```javascript
-// src/ride/services/RideService.js
-if (rideType === 'shared') {
-  // Scans currently active rides for structural overlaps
-  const existingRide = this.driverMatchingService.sharedRideMatcher
-                           .findMatchingSharedRide(pickupLat, pickupLng, dropLat, dropLng);
-  
-  if (existingRide) {
-    if (existingRide.currentRiders.find(r => r.userId === userId)) {
-      throw new Error('Rider is already part of this ride'); // Edge Case Handling
+    class PricingStrategy {
+        <<interface>>
+        +calculateFee(duration, type)
     }
-    // Mutates state and occupies a seat constraint safely
-    existingRide.currentRiders.push({ userId, pickup: pickupLoc, drop: dropLoc });
-    existingRide.availableSeats -= 1;
-    return existingRide;
-  }
-}
-```
+    class HourlyPricingStrategy {
+        +calculateFee(duration, type)
+    }
+    class DailyPricingStrategy {
+        +calculateFee(duration, type)
+    }
+    PricingStrategy <|-- HourlyPricingStrategy
+    PricingStrategy <|-- DailyPricingStrategy
 
-#### 3. Ride Lifecycle Execution
-After driver match, the real-world trip occurs. We enforce a strict finite state machine: `REQUESTED` → `ACCEPTED` → `STARTED` → `COMPLETED`.
-* **API Targets:** `POST /v1/api/rides/accept`, `POST /v1/api/rides/start`
-* **System Design Concept - Observer / Pub-Sub Pattern:** Notification hooks are triggered when state shifts so the passenger apps organically update their UI without excessive polling.
-```javascript
-// src/ride/services/RideService.js
-acceptRide(rideId, driverId) {
-  const ride = this.postgresStore.getRide(rideId);
-  if (ride.status !== 'REQUESTED') throw new Error('Ride is no longer available'); // Enforce FSM state
-  
-  ride.status = 'ACCEPTED';
-  
-  // Releases the lock since the transaction logic succeeded
-  this.driverMatchingService.releaseDriverLock(driverId);
-  
-  // Observer Pattern: Push update to passenger socket
-  ride.currentRiders.forEach(r => {
-      this.notificationService.notifyRider(r.userId, `Driver accepted your ride.`);
-  });
-  return ride;
-}
+    class ParkingService {
+        +checkIn()
+        +checkOut(pricingStrategy)
+    }
+    ParkingService --> PricingStrategy
+    ParkingService --> VehicleFactory
 ```
 
 ---
 
-## ⚙️ 8. Database Design (ER & Schemas)
+## 🚘 5. Detailed Step-by-Step Implementation Logic
 
-By strictly defining the NoSQL structure, we pave the way for heavy geographical queries (`$nearSphere` in MongoDB) while preserving relational integrity across domains.
+### 5.1 Detailed Step-by-Step Parking Flow
+**1. User searches parking**
+* **Explanation:** The user queries the application to view current slot availability.
+* **Backend Logic:** Pings the data layer to aggregate slots mapped as `isOccupied == false`.
+* **Snippet/Logic:** `return await Spot.countDocuments({ isOccupied: false });`
+* **Edge Case:** *No available parking.* Immediately short-circuits the request and flags the UI, averting unnecessary transaction processing.
 
-### 🗄️ Database Collections (JSON Schemas)
-
-Our schema design purposefully uses embedded documents for localized access (e.g., `currentRiders` in a `Ride`) while using `ObjectId` references across domains to minimize data redundancy.
-
-**1. Ride Collection**
-This collection stores the state of both solo and shared carpools. By embedding an array of `currentRiders` directly inside the `Ride` document, we can dynamically query passenger lists in O(1) time without joining an external table. `availableSeats` is tracked explicitly to optimize matching filters.
+**2. User reserves spot**
+* **Explanation:** The user selects a time block and initiates checkout for the reservation.
+* **Backend Logic:** Places a brief transactional lock (`HOLD`) on the slot ID. If processing succeeds, the lock transitions into a persistent reservation record.
+* **Snippet:** 
 ```javascript
+const holdAcquired = await redis.set(`hold:${spotId}`, userId, 'NX', 'EX', 5); // 5 sec lock
+if (!holdAcquired) throw new Error("Slot concurrently booked by another user");
+```
+
+**3. User check-in & 4. User parks vehicle**
+* **Explanation:** The driver arrives at the physical gate.
+* **Backend Logic:** Validates the reservation against the license plate. Generates a unique QR Code Ticket stamping exact `entryTime`. Marks the slot physical state to `Occupied`.
+* **Edge Case:** *Double entry.* The arrays are parsed to verify the same license plate doesn't have an active session already open internally.
+
+**5. User check-out & 6. Payment computation**
+* **Explanation:** The car exits, the gate scans the ticket, and logic computes the cost.
+* **Backend Logic:** Subtracts entry timestamp from current timestamp. Translates the duration through the delegated Strategy Pattern pricing formula.
+* **Edge Case:** The user stayed past the reserved window. The formula seamlessly applies the designated overage multiplier dynamically.
+
+### 5.2 Detailed Step-by-Step Ride Flow
+**1. Ride request & 2. Driver Matching**
+* **Explanation:** The user requests a trip. The system searches for the closest available driver.
+* **Backend Logic:** Runs a radius bound (haversine query) across valid node coordinates and sorts sequentially by distance.
+* **Snippet:** `const drivers = redis.geosearch('driver_locs', 'FROMLONLAT', lng, lat, 'BYRADIUS', 5, 'km');`
+
+**3. Driver locking & 4. Ride acceptance**
+* **Explanation:** Secures the driver so another concurrent request cannot assign them simultaneously.
+* **Backend Logic:** Issues a lock on the target driver's ID. If granted, pushes the route data to the driver to Accept.
+* **Edge Case:** *Driver collision.* Two concurrent pings occur. The atomic lock ensures only the fastest request succeeds; subsequent requests gracefully proceed to scan the next closest available driver.
+
+**5. Ride start & 6. Ride completion**
+* **Explanation:** The journey takes place.
+* **Backend Logic:** At termination, payment executes, and the driver `status` reflects back to `IDLE`.
+
+### 5.3 Shared Ride Flow (Carpooling Deep Dive)
+**1. User selects shared ride & 2. System checks existing rides**
+* **Explanation:** Combines trips to optimize load.
+* **Backend Logic:** Queries for active rides matching `rideType: 'shared'` that bound the necessary target area.
+
+**3. Route matching & 4. Capacity validation (Line Sweep)**
+* **Explanation:** Validates the detour routing and ensures adding the user won't push the seat limit organically at any cross-section of the ongoing trip.
+* **Backend Logic (Line Sweep algorithm):** Sorts pickup/drop-off nodes chronologically. As the sweep analyzes left-to-right, it tracks (+1 load, -1 load). If the tracker mathematically exceeds car capacity at any segment, the match fails safely.
+* **Snippet:** 
+```javascript
+function isCapacityValid(trips, maxCapacity) {
+    let currentPassengers = 0;
+    for (const event of sortedTimelineEvents) {
+        currentPassengers += event.value; 
+        if (currentPassengers > maxCapacity) return false;
+    }
+    return true;
+}
+```
+
+**5. Joining ride OR creating new ride**
+* **Explanation:** If valid, the passenger is appended to the embedded array naturally. If the sweep or match fails, the system spins off a fresh solo driver request that handles the current user.
+
+---
+
+## 💻 6. Implementation Code Handlers (Core Functions)
+
+### 6.1 Parking Core Functions
+* `findAvailableSpot()`: Evaluates slots marked as `isOccupied: false` to return physical boundary data.
+* `parkVehicle()`: Operates completely across the internal mapping logic to bind space constraints to a `Vehicle` entity.
+* `checkIn()`: Core entry interaction API. Executes logic validating booking histories against hardware scans.
+* `checkOut()`: Evaluator termination. Reverses `checkIn`, calls integrated pricing engines, frees tracking metrics, and finalizes the timeline.
+
+### 6.2 Ride Core Functions
+* `requestRide()`: Primary intake parser. Safely splits evaluation based on the requested `rideType`.
+* `matchDriver()`: Dedicated handler managing geographic location scanning, calculations, and concurrent request locks.
+* `joinSharedRide()`: Validation processor. Coordinates physical mapping tests via algorithms (Line Sweep) to determine if adding a rider mathematically voids capacity limits.
+
+---
+
+## 🚨 7. Edge Case Deep Dive
+How the system manages complex workflows and exceptions natively:
+
+* **No available parking:** Evaluated upfront safely, short-circuiting logic before committing DB resources.
+* **Double booking / Concurrent reservation:** Resolved dynamically by leveraging transactional soft locks. The primary network request acquires the hold, explicitly preventing parallel user transactions on identical records.
+* **Driver collision:** Handled physically over distributed locking. If application nodes request the exact same driver, the first thread holds the mutex securely.
+* **Ride full:** Safely intercepted during the Line Sweep loop, ensuring the system never issues an assignment ticket if spatial constraints predict an overrun.
+* **Payment failure:** Webhook architecture prevents indefinite hanging states. If an asynchronous `payment.failed` event is delivered, the module processes an automatic fallback clearing the ticket.
+
+---
+
+## 🗄️ 8. Database Schema Design (Deep Dive)
+
+The system schema models pair embedded documents for localized access alongside relational referencing for isolated entities. 
+
+### 8.1 MongoDB Schemas, Indexes & Patterns
+
+**1. User Schema**
+```json
 {
-  _id: ObjectId,                 // Primary Key
-  driverId: ObjectId,            // Foreign Key -> Driver Collection
-  rideType: String,              // Enum: 'solo' | 'shared'
-  status: String,                // FSM Enum: 'REQUESTED' | 'ACCEPTED' | 'COMPLETED'
-  currentRiders: [{              // Embedded array for fast trajectory mappings
-     userId: ObjectId,
-     pickup: { lat: Number, lng: Number },
-     drop: { lat: Number, lng: Number }
+  "_id": "ObjectId",
+  "name": "String",
+  "phone": "String",
+  "walletBalance": "Number",
+  "createdAt": "Date"
+}
+// Indexes: { "phone": 1 } (Unique - Fast lookups during authentication)
+```
+
+**2. Driver & Vehicle Schemas**
+```json
+{
+  "_id": "ObjectId",
+  "currentLocation": { "type": "Point", "coordinates": [lng, lat] }, 
+  "status": "String (ACTIVE | IDLE | OFFLINE)",
+  "vehicleId": "ObjectId (Ref: Vehicle)"
+}
+// Indexes: { "currentLocation": "2dsphere" } (Critical for geographic distance querying)
+```
+* **Separation Logic:** A driver might operate different physical vehicles on varying shifts. Keeping them independent ensures structural flexibility.
+
+**3. ParkingSpot & Reservation Schemas**
+```json
+{
+  "_id": "ObjectId",
+  "spotNumber": "String",
+  "isOccupied": "Boolean",
+  "reservations": [{ 
+      "bookingId": "ObjectId",
+      "userId": "ObjectId",
+      "startTime": "Date",
+      "endTime": "Date"
+  }]
+}
+// Indexes: { "isOccupied": 1 }
+```
+* **Embedding vs Referencing Trade-off:** Reservations are safely embedded into the primary `ParkingSpot` array. Operating locally on the parent spot prevents race conditions natively.
+
+**4. Ride Collection**
+```json
+{
+  "_id": "ObjectId",
+  "driverId": "ObjectId", 
+  "rideType": "String (solo | shared)",
+  "currentRiders": [{ 
+     "userId": "ObjectId",
+     "pickup": { "lat": 12.3, "lng": 45.6 },
+     "drop": { "lat": 44.4, "lng": 11.2 }
   }],
-  availableSeats: Number         // Pre-computed aggregation field for O(1) capacity checks
+  "maxCapacity": 4,
+  "status": "String (STARTED | COMPLETED)"
 }
+// Indexes: { "status": 1, "rideType": 1 }
 ```
+* **Embedding over Referencing:** Embedding `currentRiders` avoids repeated query lookups. Viewing a single ride document instantly yields passenger data.
 
-**2. Ticket Collection**
-The `Ticket` entity bridges the gap between a vehicle and a physical parking spot. It captures the lifespan of the parking event through `entryTime` and `exitTime`, allowing downstream strategies to dynamically compute the `fee`.
-```javascript
+**5. Ticket & Payment Schemas**
+```json
 {
-  _id: ObjectId,                 // Primary Key (Maps directly to the QR Code)
-  vehicleId: ObjectId,           // Foreign Key -> Vehicle
-  spotId: ObjectId,              // Foreign Key -> Parking Spot
-  entryTime: Date,               // ISO Timestamp (When the gate opens)
-  exitTime: Date,                // ISO Timestamp (When ticket is settled)
-  fee: Number                    // Computed dynamically upon checkout
+  "_id": "ObjectId", // Functions logically as the scanning Token
+  "spotId": "ObjectId",
+  "entryTime": "Date",
+  "exitTime": "Date",
+  "fee": "Number",
+  "transactionId": "String" // Idempotency logic enforcement
 }
 ```
 
-### 🔗 Entity Relationship (ER) Diagram
-Our ER map illustrates a hub-and-spoke model where the `User` acts as the root, expanding into vehicles and transacting across either a `Parking Spot` or a `Ride`.
-
+### 8.2 ER Diagram (Entity Relationships)
 ```text
-[ User ] --(1:N)--> [ Vehicle ]
-                       |
-                   (1:N)
+[ User ] ---(1:N)---> [ Vehicle ]
+                       | (1:N)
                        v
-                 [ Ticket ] <--(1:1)--> [ Payment ]
-                       ^                   |
-                       |                 (1:1)
-                 [ Parking Spot ]          v
-                                        [ Ride ]
-```
-**Relationship Breakdown:**
-- **User ⇄ Vehicle (1:N):** One user can register multiple vehicles (e.g., a car and a bike).
-- **Vehicle ⇄ Ticket (1:N):** A vehicle can have many past tickets, but only one `ACTIVE` ticket at a time.
-- **Ticket ⇄ Parking Spot (N:1):** A spot hosts many tickets over time, but only one `ACTIVE` ticket.
-- **Ticket / Ride ⇄ Payment (1:1):** Every completed service strictly generates one immutable Payment intent.
-
----
-
-## 💻 9. Core Algorithms (Pseudocode)
-
-Below is the conceptual pseudocode outlining the robust algorithms used internally for critical operations.
-
-### 🅿️ Parking Booking & Conflict Resolution
-```javascript
-function bookParking(userId, location, timeSlot):
-    // STEP 1: Get available slots WITH price
-    availableSlots = getAvailableSlotsWithPrice(location, timeSlot)
-    if availableSlots is empty:
-        return "No slots available"
-
-    // STEP 2: User selects slot 
-    slot = selectSlot(availableSlots)
-
-    // STEP 3: Create HOLD (temporary reservation)
-    // Avoid double booking concurrently
-    holdAcquired = createHold(slot.id, userId, HOLD_DURATION)
-    if holdAcquired == false:
-        return "Slot is currently being booked by another user"
-
-    // STEP 4: Retain locked price
-    price = slot.price
-
-    // STEP 5: Process Payment
-    paymentStatus = processPayment(userId, price)
-    if paymentStatus != "success":
-        releaseHold(slot.id)
-        return "Payment failed"
-
-    // STEP 6: Final booking (Transaction safety)
-    beginTransaction()
-    slot = getSlot(slot.id)
-    if slot.isBooked == true:
-        rollback()
-        releaseHold(slot.id)
-        refundPayment(userId)
-        return "Slot unavailable, refund initiated"
-
-    slot.isBooked = true
-    booking = createBooking(userId, slot.id, timeSlot)
-    qrCode = generateQRCode(booking.id)
-    commitTransaction()
-
-    // STEP 7: Release temporary HOLD
-    releaseHold(slot.id)
-
-    return booking + qrCode
-
-function getAvailableSlots(location, timeSlot):
-    // Conflict resolution scanning all target schemas
-    slots = querySlots(location)
-    available = []
-    for slot in slots:
-        if slot.isBooked == false:
-            available.add(slot)
-    return available
-```
-
-### 🚪 Parking Check-In
-```javascript
-function checkIn(bookingId, currentTime):
-    booking = getBooking(bookingId)
-
-    if booking == null:
-        return "Invalid booking"
-
-    // Expire reservations if they missed their grace period
-    if currentTime > booking.startTime + GRACE_PERIOD:
-        cancelBooking(bookingId)
-        return "Booking expired"
-
-    slot = assignSlot(booking)
-    markSlotOccupied(slot.id)
-
-    return "Entry Allowed"
-```
-
-### 🗺️ Offline Ticket Handling
-```javascript
-function getBookingOffline(userId):
-    // Falls back to cached local storage mapping if network drops
-    booking = getFromLocalStorage(userId)
-
-    if booking exists:
-        return booking.qrCode
-
-    return "No offline data"
-```
-
-### 🤝 Ride Pooling & Allocation
-```javascript
-function requestRide(userId, source, destination):
-    candidateRides = findNearbyRides(source)
-
-    for ride in candidateRides:
-        // Ensures geographic trajectory alignment without massive detours
-        if routesOverlap(ride, source, destination):
-            if ride.currentPassengers + 1 <= ride.capacity:
-                addUserToRide(ride.id, userId)
-                return "Ride Assigned"
-
-    // Fallback: Dispatch an entirely new car
-    newRide = createRide(userId, source, destination)
-    return "New Ride Created"
-```
-
-### 📏 Internal Capacity Check (Line Sweep Technique)
-To dynamically ensure that overlapping routes don't exceed car capacity at *any* intermediate point, we employ a **Line Sweep Algorithm**.
-```javascript
-function isCapacityValid(trips, capacity):
-    events = []
-
-    // Populate events across the timeline (+1 passenger entering, -1 exiting)
-    for trip in trips:
-        passengers = trip.passengers
-        events.add((trip.start, +passengers))
-        events.add((trip.end, -passengers))
-
-    // Sort events linearly by location / time progression
-    sort events by location
-
-    currentPassengers = 0
-
-    // Sweep across the timeline tracking integer loads
-    for event in events:
-        currentPassengers += event.value
-        if currentPassengers > capacity:
-            return false // Car exceeds legal bounds at this junction!
-
-    return true // Safe
-```
-
-### ❌ Ride Cancellation
-```javascript
-function cancelRide(userId, rideId, currentTime):
-    ride = getRide(rideId)
-
-    if userId not in ride.passengers:
-        return "Invalid request"
-
-    timeBeforeStart = ride.startTime - currentTime
-
-    // 1. Remove user from ride & free the explicit seat
-    removeUserFromRide(rideId, userId)
-    ride.currentPassengers -= 1
-
-    // 2. Broadcast availability back to the pooling pool
-    if ride.currentPassengers < ride.capacity:
-        markRideAsAvailable(rideId)
-
-    notifyDriver(rideId)
-
-    // 3. Resolve Penalties
-    if timeBeforeStart > FREE_CANCELLATION_WINDOW:
-        return "Ride cancelled (no charges)"
-    else:
-        fee = calculateCancellationFee(rideId)
-        processPenalty(userId, fee)
-        return "Ride cancelled with fee"
+                 [ Ticket ] <---(1:1)---> [ Payment ]
+                       ^                    |
+                 (N:1) |                    | (1:1)
+                 [ Parking Spot ]           v
+                                         [ Ride ] <---(1:N)--- [ Driver ]
 ```
 
 ---
 
-## 🎨 10. Design Patterns Used
+## 🔌 9. API Deep Dive
 
-Implementing strict Software Engineering Design patterns ensures stability:
+### A. Book Ride (POST `/v1/api/rides/request`)
+**Request JSON:**
+```json
+{
+  "userId": "60d5ecb8b392d7",
+  "pickup": { "lat": 12.9716, "lng": 77.5946 },
+  "drop": { "lat": 12.9515, "lng": 77.4986 },
+  "rideType": "shared",
+  "vehicleType": "CAR"
+}
+```
+**Response JSON (200 OK):**
+```json
+{ 
+  "message": "Matched and joined existing shared ride", 
+  "rideId": "77f9cd", 
+  "driverEta": "4 mins" 
+}
+```
+**Validation Logic:** Verifies coordinates and payload constraints.
 
-1. **Factory Pattern (`VehicleFactory`)**: Creates exact instances of `Car`, `Bike`, or `Truck` ensuring centralized vehicle logic.
-2. **Strategy Pattern (`PricingStrategy` & `FareCalculationStrategy`)**: Easily hot-swap pricing formulas based on surge hours, weekend rates, and vehicle tiers without modifying inner service constraints.
-3. **Singleton Pattern (`PostgresStore`, `RedisStore`)**: Prevents memory leaks by ensuring the server instantiates exactly one DB connection pool to manage concurrent states.
-
----
-
-## 🛡️ 11. Edge Case Handling (Why & How)
-
-| Scenario | Handled By | Why it is handled this way |
-| :--- | :--- | :--- |
-| **Concurrency Collisions** | `ZookeeperLock.js` | Stops the system from assigning 1 driver to 2 discrete callers at the exact same millisecond. |
-| **Carpool Overflow** | `availableSeats` attribute | Checks integer counts *before* accepting pushes into arrays. Protects drivers from being cited for overcrowding. |
-| **Payment Dropoffs** | Unified Webhooks | If a user closes the Razorpay window but money leaves their bank, Razorpay's asynchronous webhook hits `/api/payment/webhook` to idempotently finalize the database record. |
-| **No Parking Found** | Service Exceptions | Immediately kicks out a generic `400 Bad Request` rather than attempting a partial object generation, saving memory overhead. |
-
----
-
-## 🌐 12. API Documentation Reference
-
-*For full payloads, view Postman environments.*
-
-### Parking APIs (`/api`)
-* `POST /reservations` - Reserve a spot.
-* `POST /checkin` - Entry validation.
-* `POST /checkout` - Exit and compute fee.
-
-### Ride APIs (`/v1/api`)
-* `POST /rides/request` - Hail a driver.
-* `POST /rides/join-shared` - Join passing carpool.
-* `POST /ride/rides` - Driver interface for Accept/Deny.
-* `POST /drivers/location` - High frequency pinging of GPS coordinates.
-
-### Payment APIs (`/api/payment`)
-* `POST /checkout` - Generate Razorpay processing Order ID.
-* `POST /verify` - Confirms cryptographic signature matching.
+### B. Parking Checkout (POST `/api/parking/checkout`)
+**Request JSON:**
+```json
+{
+  "ticketId": "qr_abc123",
+  "pricingMethod": "HOURLY"
+}
+```
+**Validation Logic:** Extracts precise duration from `entryTime`, confirming against `exitTime` logic paths safely and injecting algorithms.
 
 ---
 
-## 🚀 13. Future Scope & Extensibility
+## ⚖️ 10. Design Decisions
 
-If given further runway, the architecture supports:
-1. **Real-time WebSockets (Socket.IO)**: Replacing polling mechanisms with active bi-directional streams for visualizing a car moving flawlessly across a mobile map.
-2. **Advanced GIS Routing**: Connecting to Google Maps/MapBox to swap our current "Airline-style Haversine Distance" for exact traffic-adjusted ETAs.
-3. **Database Migration to Real Shards**: Transitioning the JS `Maps` mocking system to actual `mongoose` schemas connected to a horizontally sharded Atlas cluster.
-4. **Dockerization**: Writing a `docker-compose.yaml` to instantly boot Node, Redis, and Zookeeper locally.
+1. **Why Node.js?**
+   * Node.js operates on an event-driven architecture that functions superbly for highly active IO bounds, managing frequent WebSocket connections and parallel request events securely.
+2. **Why MongoDB?**
+   * Unstructured document flexibility complements variable-sized structures like `currentRiders` dynamically, while natively handling GeoJSON `$nearSphere` location queries perfectly.
+3. **Why Redis?**
+   * Updating continuous GPS tracking streams into a hard disk would severely bottleneck persistence data layers. Redis structures temporary state tracking tightly in system memory.
+4. **Why Distributed Locks (Zookeeper)?**
+   * To handle atomic assignment. While solutions heavily emphasize availability, coordination systems like Zookeeper place strict guarantees on maintaining Consistency, effectively mitigating race conditions over identical drivers.
 
 ---
-*Built to scale. Designed for the modern commute.* 🏙️
+
+## 🚀 11. Future Scalability & Enhancements
+
+While the basic configurations demonstrate core backend logic operations, the overarching structure incorporates mechanisms built for robust scaling:
+
+* **Horizontal Scaling**: The API configurations efficiently support scaling Node instances alongside load balancing clusters (such as NGINX or ALB) gracefully securely.
+* **Database Migration & Sharding**: As physical ride history scales continuously, MongoDB enables explicit partitioning models. Hashing the `userId` provides a strong strategy to partition historical data dynamically uniformly.
+* **Caching Subsystems**: Pricing layers and static boundaries integrate easily inside Redis architectures to shield standard disk operations from exhaustive reads.
+* **Real-time WebSockets**: Replacing client polling endpoints strictly with Socket.IO streams enables efficient, persistent bi-directional communication channels supporting live tracking reliably.
+
+---
+
+## 🛡️ 12. Failure Handling & Resilience
+
+* **Payment Validations:** Integrated safely over webhook processes that verify dropped user transactions asynchronously.
+* **Spot Commitments:** Validated efficiently against Redis `Hold` limits maintaining unhindered checkout states.
+* **Driver Connections:** Checked reliably against timeout loops removing unavailable drivers cleanly ensuring valid passenger pairings dynamically.
+
+---
+
+## ⚠️ 13. Current Limitations
+
+This current project documentation operates as a strong demonstration of software patterns; it is aware of standard functional limitations intrinsically:
+
+* **In-Memory Logic:** Aspects surrounding active session limits rely temporarily on locally modeled arrays to demonstrate logic seamlessly.
+* **Simulated Geographical Tracking:** The current Haversine model computes "as-the-crow-flies" distance statically rather than consuming complex external mapping APIs representing active traffic networks securely.
+* **Infrastructure Deployment:** Components (Kafka/Redis/Zookeeper/MongoDB) highlight architectural models logically; active demonstrations resolve entirely inside contained local container networking limits presently safely.
+* **Active Hardware Monitoring:** Lacks fully realized live continuous bi-directional tracking implementations tracking pure live device GPS modules continuously safely.
+
+---
+
+## 🔄 14. System Trade-Offs
+
+* **Accuracy vs Performance:** Implementing pure Haversine distance computations functions tremendously quickly (O(1)) sequentially but does not factor standard real-world traffic flows. A calculated technical trade-off providing instantaneous computational bounds securely locally.
+* **Consistency vs Latency:** Using explicit node locks across assignments guarantees consistency inherently but generates small intrinsic delays safely processing atomic locks.
+* **Embedding vs Referencing:** Storing embedded target data safely inside the array eliminates explicit mapping delays, successfully managing N+1 query limits logically over data redundancy.
