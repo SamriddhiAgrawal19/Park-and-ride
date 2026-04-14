@@ -142,34 +142,122 @@ By separating Parking, Ride, and Payment logic into distinct domains, the codeba
 
 ## 🧩 4. Low-Level Design (LLD)
 
-### 4.1 Class Level Design
-The application utilizes standard GOF design patterns to maintain stable and extensible logic.
+### 4.1 Parking System Class Design
+This class diagram illustrates the primary entities and logic flow for the Parking module.
 
 ```mermaid
 classDiagram
-    class VehicleFactory {
-        +createVehicle(type, licensePlate)
+    class Vehicle {
+        +String licensePlate
+        +String type
     }
-    class PricingStrategy {
-        <<interface>>
-        +calculateFee(duration, type)
+
+    class ParkingSpot {
+        +String spotId
+        +String type
+        +Boolean isOccupied
+        +Vehicle vehicle
+        +assignVehicle(vehicle)
+        +vacate()
     }
-    class HourlyPricingStrategy {
-        +calculateFee(duration, type)
+
+    class Reservation {
+        +String reservationId
+        +String vehicleId
+        +String spotId
+        +Date startTime
+        +Date endTime
+        +String status
     }
-    class DailyPricingStrategy {
-        +calculateFee(duration, type)
+
+    class Ticket {
+        +String ticketId
+        +String vehicleId
+        +String spotId
+        +Date entryTime
+        +Date exitTime
+        +Number fee
+        +String status
     }
-    PricingStrategy <|-- HourlyPricingStrategy
-    PricingStrategy <|-- DailyPricingStrategy
 
     class ParkingService {
-        +checkIn()
-        +checkOut(pricingStrategy)
+        +checkIn(vehicle)
+        +checkOut(ticketId)
+        +findAvailableSpot(type)
     }
-    ParkingService --> PricingStrategy
-    ParkingService --> VehicleFactory
+
+    ParkingService --> ParkingSpot
+    ParkingService --> Reservation
+    ParkingService --> Ticket
+    ParkingSpot --> Vehicle
+    Ticket --> Vehicle
+    Reservation --> ParkingSpot
 ```
+
+**Class Explanations:**
+* **Vehicle:** Represents a user's car navigating the parking ecosystem.
+* **ParkingSpot:** Represents the physical space, managing its own occupancy state and vehicle assignment.
+* **Reservation:** Stores pre-booked time windows for a specific spot and vehicle context.
+* **Ticket:** Tracks an active session, capturing duration and the financial fee upon exit.
+* **ParkingService:** The core orchestrator managing spot allocation, check-ins, and checkout logistics.
+
+**Parking Flow:**  
+The exact lifecycle: `checkIn` initialized → `findAvailableSpot` allocates a spot → `assignVehicle` locks the space → `Ticket` generated to log entry → User returns and triggers `checkOut` → Duration fee calculated → Space officially reaches `vacate`.
+
+---
+
+### 4.2 Ride System Class Design
+This class diagram focuses on the Ride module, detailing both solo matchings and shared ride aggregations.
+
+```mermaid
+classDiagram
+    class Ride {
+        +String rideId
+        +String rideType
+        +Array currentRiders
+        +Number maxCapacity
+        +Object pickup
+        +Object drop
+        +String status
+    }
+
+    class Driver {
+        +String driverId
+        +Object location
+        +Boolean isAvailable
+    }
+
+    class RideService {
+        +requestRide()
+        +matchDriver()
+        +joinSharedRide()
+    }
+
+    class DriverMatchingService {
+        +findNearestDriver()
+        +lockDriver()
+    }
+
+    class SharedRideMatcher {
+        +findMatchingRide()
+    }
+
+    RideService --> Ride
+    RideService --> DriverMatchingService
+    RideService --> SharedRideMatcher
+    DriverMatchingService --> Driver
+    Ride --> Driver
+```
+
+**Class Explanations:**
+* **Ride:** Represents a logical trip entity, holding passenger arrays, capacities, and route coordinates.
+* **Driver:** Maintains driver identity, live geospatial tracking, and job availability status.
+* **RideService:** Application orchestrator managing high-level requests, deciding between solo or carpool routing.
+* **DriverMatchingService:** Core assignment engine finding candidates geospatially and safely locking them (`lockDriver`).
+* **SharedRideMatcher:** Evaluates overlapping active journeys to pair optimal carpool riders dynamically.
+
+**Ride Flow:**  
+The exact lifecycle: User makes `request` → System delegates to `DriverMatchingService` or `SharedRideMatcher` for a `match` → `Driver` confirms and moves to `accept` → Ride formally switches to `start` status → Destination is reached, marking the log as `complete`.
 
 ---
 
