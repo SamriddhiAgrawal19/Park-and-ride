@@ -1,5 +1,5 @@
 const app = require('./app');
-const { logger } = require('./utils/logger');
+const { logger } = require('./src/common/utils/logger');
 
 const PORT = process.env.PORT || 3000;
 

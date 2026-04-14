@@ -3,8 +3,8 @@ const { VehicleFactory } = require('../factory/VehicleFactory');
 const { Ticket } = require('../models/Ticket');
 const { Reservation } = require('../models/Reservation');
 const { randomUUID } = require('crypto');
-const { AppError } = require('../utils/errors');
-const { logger } = require('../utils/logger');
+const { AppError } = require('../../common/utils/errors');
+const { logger } = require('../../common/utils/logger');
 
 class ParkingService {
   constructor() {

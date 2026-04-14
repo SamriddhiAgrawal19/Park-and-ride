@@ -1,14 +1,19 @@
 const express = require('express');
-const parkingRoutes = require('./routes/parkingRoutes');
-const { AppError } = require('./utils/errors');
-const { logger } = require('./utils/logger');
+const parkingRoutes = require('./src/parking/routes/parkingRoutes');
+const rideRoutes = require('./src/ride/routes/rideRoutes');
+const { AppError } = require('./src/common/utils/errors');
+const { logger } = require('./src/common/utils/logger');
 
 const app = express();
 
 app.use(express.json());
 
 // Routes
+app.get('/', (req, res) => {
+  res.send('Park and Ride API is running');
+});
 app.use('/api', parkingRoutes);
+app.use('/v1', rideRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
