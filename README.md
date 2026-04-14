@@ -335,39 +335,45 @@ acceptRide(rideId, driverId) {
 
 ## ⚙️ 8. Database Design (ER & Schemas)
 
-By strictly defining the NoSQL structure, we pave the way for heavy geographical queries (`$nearSphere` in MongoDB).
+By strictly defining the NoSQL structure, we pave the way for heavy geographical queries (`$nearSphere` in MongoDB) while preserving relational integrity across domains.
 
-### Database Collections (JSON Schemas)
+### 🗄️ Database Collections (JSON Schemas)
 
-**Ride Collection**
+Our schema design purposefully uses embedded documents for localized access (e.g., `currentRiders` in a `Ride`) while using `ObjectId` references across domains to minimize data redundancy.
+
+**1. Ride Collection**
+This collection stores the state of both solo and shared carpools. By embedding an array of `currentRiders` directly inside the `Ride` document, we can dynamically query passenger lists in O(1) time without joining an external table. `availableSeats` is tracked explicitly to optimize matching filters.
 ```javascript
 {
-  _id: ObjectId,
-  driverId: ObjectId,            // Reference to Driver
-  rideType: String,              // 'solo' | 'shared'
-  status: String,                // 'REQUESTED' | 'ACCEPTED' | 'COMPLETED'
-  currentRiders: [{
+  _id: ObjectId,                 // Primary Key
+  driverId: ObjectId,            // Foreign Key -> Driver Collection
+  rideType: String,              // Enum: 'solo' | 'shared'
+  status: String,                // FSM Enum: 'REQUESTED' | 'ACCEPTED' | 'COMPLETED'
+  currentRiders: [{              // Embedded array for fast trajectory mappings
      userId: ObjectId,
-     pickup: { lat, lng },
-     drop: { lat, lng }
+     pickup: { lat: Number, lng: Number },
+     drop: { lat: Number, lng: Number }
   }],
-  availableSeats: Number
+  availableSeats: Number         // Pre-computed aggregation field for O(1) capacity checks
 }
 ```
 
-**Ticket Collection**
+**2. Ticket Collection**
+The `Ticket` entity bridges the gap between a vehicle and a physical parking spot. It captures the lifespan of the parking event through `entryTime` and `exitTime`, allowing downstream strategies to dynamically compute the `fee`.
 ```javascript
 {
-  _id: ObjectId,
-  vehicleId: ObjectId,
-  spotId: ObjectId,
-  entryTime: Date,
-  exitTime: Date,
-  fee: Number
+  _id: ObjectId,                 // Primary Key (Maps directly to the QR Code)
+  vehicleId: ObjectId,           // Foreign Key -> Vehicle
+  spotId: ObjectId,              // Foreign Key -> Parking Spot
+  entryTime: Date,               // ISO Timestamp (When the gate opens)
+  exitTime: Date,                // ISO Timestamp (When ticket is settled)
+  fee: Number                    // Computed dynamically upon checkout
 }
 ```
 
-### Entity Relationship
+### 🔗 Entity Relationship (ER) Diagram
+Our ER map illustrates a hub-and-spoke model where the `User` acts as the root, expanding into vehicles and transacting across either a `Parking Spot` or a `Ride`.
+
 ```text
 [ User ] --(1:N)--> [ Vehicle ]
                        |
@@ -379,10 +385,179 @@ By strictly defining the NoSQL structure, we pave the way for heavy geographical
                  [ Parking Spot ]          v
                                         [ Ride ]
 ```
+**Relationship Breakdown:**
+- **User ⇄ Vehicle (1:N):** One user can register multiple vehicles (e.g., a car and a bike).
+- **Vehicle ⇄ Ticket (1:N):** A vehicle can have many past tickets, but only one `ACTIVE` ticket at a time.
+- **Ticket ⇄ Parking Spot (N:1):** A spot hosts many tickets over time, but only one `ACTIVE` ticket.
+- **Ticket / Ride ⇄ Payment (1:1):** Every completed service strictly generates one immutable Payment intent.
 
 ---
 
-## 🎨 9. Design Patterns Used
+## 💻 9. Core Algorithms (Pseudocode)
+
+Below is the conceptual pseudocode outlining the robust algorithms used internally for critical operations.
+
+### 🅿️ Parking Booking & Conflict Resolution
+```javascript
+function bookParking(userId, location, timeSlot):
+    // STEP 1: Get available slots WITH price
+    availableSlots = getAvailableSlotsWithPrice(location, timeSlot)
+    if availableSlots is empty:
+        return "No slots available"
+
+    // STEP 2: User selects slot 
+    slot = selectSlot(availableSlots)
+
+    // STEP 3: Create HOLD (temporary reservation)
+    // Avoid double booking concurrently
+    holdAcquired = createHold(slot.id, userId, HOLD_DURATION)
+    if holdAcquired == false:
+        return "Slot is currently being booked by another user"
+
+    // STEP 4: Retain locked price
+    price = slot.price
+
+    // STEP 5: Process Payment
+    paymentStatus = processPayment(userId, price)
+    if paymentStatus != "success":
+        releaseHold(slot.id)
+        return "Payment failed"
+
+    // STEP 6: Final booking (Transaction safety)
+    beginTransaction()
+    slot = getSlot(slot.id)
+    if slot.isBooked == true:
+        rollback()
+        releaseHold(slot.id)
+        refundPayment(userId)
+        return "Slot unavailable, refund initiated"
+
+    slot.isBooked = true
+    booking = createBooking(userId, slot.id, timeSlot)
+    qrCode = generateQRCode(booking.id)
+    commitTransaction()
+
+    // STEP 7: Release temporary HOLD
+    releaseHold(slot.id)
+
+    return booking + qrCode
+
+function getAvailableSlots(location, timeSlot):
+    // Conflict resolution scanning all target schemas
+    slots = querySlots(location)
+    available = []
+    for slot in slots:
+        if slot.isBooked == false:
+            available.add(slot)
+    return available
+```
+
+### 🚪 Parking Check-In
+```javascript
+function checkIn(bookingId, currentTime):
+    booking = getBooking(bookingId)
+
+    if booking == null:
+        return "Invalid booking"
+
+    // Expire reservations if they missed their grace period
+    if currentTime > booking.startTime + GRACE_PERIOD:
+        cancelBooking(bookingId)
+        return "Booking expired"
+
+    slot = assignSlot(booking)
+    markSlotOccupied(slot.id)
+
+    return "Entry Allowed"
+```
+
+### 🗺️ Offline Ticket Handling
+```javascript
+function getBookingOffline(userId):
+    // Falls back to cached local storage mapping if network drops
+    booking = getFromLocalStorage(userId)
+
+    if booking exists:
+        return booking.qrCode
+
+    return "No offline data"
+```
+
+### 🤝 Ride Pooling & Allocation
+```javascript
+function requestRide(userId, source, destination):
+    candidateRides = findNearbyRides(source)
+
+    for ride in candidateRides:
+        // Ensures geographic trajectory alignment without massive detours
+        if routesOverlap(ride, source, destination):
+            if ride.currentPassengers + 1 <= ride.capacity:
+                addUserToRide(ride.id, userId)
+                return "Ride Assigned"
+
+    // Fallback: Dispatch an entirely new car
+    newRide = createRide(userId, source, destination)
+    return "New Ride Created"
+```
+
+### 📏 Internal Capacity Check (Line Sweep Technique)
+To dynamically ensure that overlapping routes don't exceed car capacity at *any* intermediate point, we employ a **Line Sweep Algorithm**.
+```javascript
+function isCapacityValid(trips, capacity):
+    events = []
+
+    // Populate events across the timeline (+1 passenger entering, -1 exiting)
+    for trip in trips:
+        passengers = trip.passengers
+        events.add((trip.start, +passengers))
+        events.add((trip.end, -passengers))
+
+    // Sort events linearly by location / time progression
+    sort events by location
+
+    currentPassengers = 0
+
+    // Sweep across the timeline tracking integer loads
+    for event in events:
+        currentPassengers += event.value
+        if currentPassengers > capacity:
+            return false // Car exceeds legal bounds at this junction!
+
+    return true // Safe
+```
+
+### ❌ Ride Cancellation
+```javascript
+function cancelRide(userId, rideId, currentTime):
+    ride = getRide(rideId)
+
+    if userId not in ride.passengers:
+        return "Invalid request"
+
+    timeBeforeStart = ride.startTime - currentTime
+
+    // 1. Remove user from ride & free the explicit seat
+    removeUserFromRide(rideId, userId)
+    ride.currentPassengers -= 1
+
+    // 2. Broadcast availability back to the pooling pool
+    if ride.currentPassengers < ride.capacity:
+        markRideAsAvailable(rideId)
+
+    notifyDriver(rideId)
+
+    // 3. Resolve Penalties
+    if timeBeforeStart > FREE_CANCELLATION_WINDOW:
+        return "Ride cancelled (no charges)"
+    else:
+        fee = calculateCancellationFee(rideId)
+        processPenalty(userId, fee)
+        return "Ride cancelled with fee"
+```
+
+---
+
+## 🎨 10. Design Patterns Used
 
 Implementing strict Software Engineering Design patterns ensures stability:
 
@@ -392,7 +567,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🛡️ 10. Edge Case Handling (Why & How)
+## 🛡️ 11. Edge Case Handling (Why & How)
 
 | Scenario | Handled By | Why it is handled this way |
 | :--- | :--- | :--- |
@@ -403,7 +578,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🌐 11. API Documentation Reference
+## 🌐 12. API Documentation Reference
 
 *For full payloads, view Postman environments.*
 
@@ -424,7 +599,7 @@ Implementing strict Software Engineering Design patterns ensures stability:
 
 ---
 
-## 🚀 12. Future Scope & Extensibility
+## 🚀 13. Future Scope & Extensibility
 
 If given further runway, the architecture supports:
 1. **Real-time WebSockets (Socket.IO)**: Replacing polling mechanisms with active bi-directional streams for visualizing a car moving flawlessly across a mobile map.
