@@ -422,11 +422,19 @@ After driver match, the real-world trip occurs. We enforce a strict finite state
 * **System Design Concept - Observer / Pub-Sub Pattern:** Notification hooks are triggered when state shifts so the passenger apps organically update their UI without excessive polling.
 ```javascript
 // src/ride/services/RideService.js
-acceptRide(rideId, driverId) {
-  const ride = this.postgresStore.getRide(rideId);
-  if (ride.status !== 'REQUESTED') throw new Error('Ride is no longer available'); // Enforce FSM state
-  
-  ride.status = 'ACCEPTED';
+async acceptRide(rideId, driverId) {
+  // Use MongoDB atomic updates to securely change the ride state
+  // This prevents race conditions if multiple drivers try to accept simultaneously
+  const ride = await Ride.findOneAndUpdate(
+    { _id: rideId, status: 'REQUESTED' },
+    { $set: { status: 'ACCEPTED', driverId: driverId } },
+    { new: true } // Return the successfully updated document
+  );
+
+  // If the ride wasn't found or was no longer 'REQUESTED', the update fails safely
+  if (!ride) {
+    throw new Error('Ride is no longer available or already accepted.'); // Enforce FSM state securely
+  }
   
   // Releases the lock since the transaction logic succeeded
   this.driverMatchingService.releaseDriverLock(driverId);
