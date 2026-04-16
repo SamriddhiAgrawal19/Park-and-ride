@@ -270,7 +270,7 @@ The parking system actively manages real-time spot reservations and validation b
 #### 1. Checking Availability & Searching for Parking
 Before heading to a parking lot or making a reservation, users can check for available spots. 
 * **API Target:** `GET /api/spots/available`
-* **Code Handling:** The system accesses the singleton `ParkingLot` to filter and return currently vacant spots.
+* **Code Handling:** The system accesses the `ParkingLot` to filter and return currently vacant spots.
 ```javascript
 // src/parking/controllers/ParkingController.js
 static getAvailableSpots(req, res) {
